@@ -1,4 +1,4 @@
-# app.py (Final Redirect Version)
+# app.py (Upgraded with Image+Text Response)
 
 import os
 import json
@@ -63,9 +63,9 @@ def callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     user_message = event.message.text.strip()
-    reply_message = None
+    reply_messages = [] # Use a list to hold multiple message objects
 
-    default_reply = TextMessage(text="ขออภัยค่ะ ไม่พบข้อมูลที่ท่านสอบถาม")
+    default_reply = [TextMessage(text="ขออภัยค่ะ ไม่พบข้อมูลที่ท่านสอบถาม")]
 
     if gs_client:
         try:
@@ -87,14 +87,14 @@ def handle_text_message(event):
                             reply_text = reply_template.format(num=extracted_num)
                         else:
                             reply_text = reply_template
-                        reply_message = TextMessage(text=reply_text)
+                        reply_messages.append(TextMessage(text=reply_text))
 
                     elif response_type == 'image':
                         image_url = row.get('ImageURL')
-                        reply_message = ImageMessage(original_content_url=image_url, preview_image_url=image_url)
+                        reply_messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
                     
                     elif response_type == 'redirect':
-                        reply_message = TemplateMessage(
+                        reply_messages.append(TemplateMessage(
                             alt_text='Information',
                             template=ButtonsTemplate(
                                 text=row.get('TextReply'),
@@ -105,24 +105,35 @@ def handle_text_message(event):
                                     )
                                 ]
                             )
-                        )
+                        ))
                     
-                    break
+                    # NEW: Handle sending both an image and text
+                    elif response_type == 'image_text':
+                        text_reply = row.get('TextReply')
+                        image_url = row.get('ImageURL')
+                        if text_reply:
+                            reply_messages.append(TextMessage(text=text_reply))
+                        if image_url:
+                            reply_messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
+
+                    if reply_messages:
+                        break
         except Exception as e:
             app.logger.error(f"Error processing QnA sheet: {e}")
-            reply_message = TextMessage(text="Sorry, there was an error processing your request.")
+            reply_messages = [TextMessage(text="Sorry, there was an error processing your request.")]
 
-    final_reply = reply_message if reply_message else default_reply
+    final_reply = reply_messages if reply_messages else default_reply
     
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[final_reply]
+                messages=final_reply # Send the list of messages
             )
         )
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
