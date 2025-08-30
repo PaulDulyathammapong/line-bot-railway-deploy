@@ -1,4 +1,4 @@
-# app.py (Final Version with All Response Types)
+# app.py (Final Version with All Response Types including Combo)
 
 import os
 import json
@@ -7,6 +7,7 @@ import gspread
 import base64
 from flask import Flask, request, abort
 from oauth2client.service_account import ServiceAccountCredentials
+from urllib.parse import quote
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -81,20 +82,22 @@ def handle_text_message(event):
                     response_type = row.get('ResponseType')
                     
                     if response_type == 'text':
-                        # ... (text logic remains the same)
-                        reply_messages.append(TextMessage(text=row.get('TextReply', '')))
+                        reply_template = row.get('TextReply', '')
+                        if '{num}' in reply_template and match.groups():
+                            extracted_num = match.group(1)
+                            reply_text = reply_template.format(num=extracted_num)
+                        else:
+                            reply_text = reply_template
+                        reply_messages.append(TextMessage(text=reply_text))
 
                     elif response_type == 'image':
-                        # ... (image logic remains the same)
                         if row.get('ImageURL'):
                             reply_messages.append(ImageMessage(original_content_url=row.get('ImageURL'), preview_image_url=row.get('ImageURL')))
-
-                    elif response_type == 'redirect':
-                        # ... (redirect logic remains the same)
-                        if row.get('RedirectURL') and row.get('ButtonLabel'):
-                             reply_messages.append(TemplateMessage(...))
                     
-                    # NEW: Handles a combination of messages
+                    elif response_type == 'redirect':
+                        # This logic is now part of 'combo' but kept for backward compatibility
+                        pass
+
                     elif response_type == 'combo':
                         # 1. Add Text Reply (if it exists)
                         if row.get('TextReply'):
@@ -102,28 +105,46 @@ def handle_text_message(event):
                         
                         # 2. Add multiple images (up to 4)
                         for i in range(1, 5):
-                            if len(reply_messages) >= 5: break # LINE's message limit
+                            if len(reply_messages) >= 5: break
                             image_url = row.get(f'ImageURL{i}')
                             if image_url:
                                 reply_messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
 
                         # 3. Add Redirect Button (if it exists and there's space)
-                        if len(reply_messages) < 5 and row.get('RedirectURL') and row.get('ButtonLabel'):
-                            reply_messages.append(TemplateMessage(
-                                alt_text='Information',
-                                template=ButtonsTemplate(
-                                    text=row.get('TextReply', 'กรุณาเลือกเมนูด้านล่าง'), # Use TextReply or a default
-                                    actions=[
-                                        URIAction(
-                                            label=row.get('ButtonLabel'),
-                                            uri=row.get('RedirectURL')
-                                        )
-                                    ]
-                                )
-                            ))
+                        if len(reply_messages) < 5:
+                            button_label = row.get('ButtonLabel')
+                            redirect_uri = ""
+                            oa_id = row.get('RedirectOA_ID')
+                            std_url = row.get('RedirectURL')
+
+                            if oa_id:
+                                encoded_message = quote(user_message)
+                                redirect_uri = f"https://line.me/R/oaMessage/{oa_id}/?{encoded_message}"
+                            elif std_url:
+                                redirect_uri = std_url
+
+                            if button_label and redirect_uri:
+                                # A button needs text above it. Use TextReply or a default.
+                                button_text = row.get('TextReply', 'กรุณาเลือกเมนูด้านล่าง')
+                                # If we already added the main text, make this one shorter.
+                                if row.get('TextReply') and any(isinstance(msg, TextMessage) for msg in reply_messages):
+                                    button_text = "ตัวเลือกเพิ่มเติม"
+
+                                reply_messages.append(TemplateMessage(
+                                    alt_text='Information',
+                                    template=ButtonsTemplate(
+                                        text=button_text,
+                                        actions=[
+                                            URIAction(
+                                                label=button_label,
+                                                uri=redirect_uri
+                                            )
+                                        ]
+                                    )
+                                ))
 
                     if reply_messages:
-                        break # Stop after finding the first match
+                        break
         except Exception as e:
             app.logger.error(f"Error processing QnA sheet: {e}")
             reply_messages = [TextMessage(text="Sorry, there was an error processing your request.")]
