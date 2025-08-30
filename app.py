@@ -1,4 +1,4 @@
-# app.py (Final Version with All Response Types including Combo)
+# app.py (Final Stable Version with reliable redirect)
 
 import os
 import json
@@ -93,10 +93,6 @@ def handle_text_message(event):
                     elif response_type == 'image':
                         if row.get('ImageURL'):
                             reply_messages.append(ImageMessage(original_content_url=row.get('ImageURL'), preview_image_url=row.get('ImageURL')))
-                    
-                    elif response_type == 'redirect':
-                        # This logic is now part of 'combo' but kept for backward compatibility
-                        pass
 
                     elif response_type == 'combo':
                         # 1. Add Text Reply (if it exists)
@@ -117,16 +113,14 @@ def handle_text_message(event):
                             oa_id = row.get('RedirectOA_ID')
                             std_url = row.get('RedirectURL')
 
+                            # UPDATED: Use the more stable "add friend" link for LINE OAs
                             if oa_id:
-                                encoded_message = quote(user_message)
-                                redirect_uri = f"https://line.me/R/oaMessage/{oa_id}/?{encoded_message}"
+                                redirect_uri = f"https://line.me/R/ti/p/{oa_id}"
                             elif std_url:
                                 redirect_uri = std_url
 
                             if button_label and redirect_uri:
-                                # A button needs text above it. Use TextReply or a default.
                                 button_text = row.get('TextReply', 'กรุณาเลือกเมนูด้านล่าง')
-                                # If we already added the main text, make this one shorter.
                                 if row.get('TextReply') and any(isinstance(msg, TextMessage) for msg in reply_messages):
                                     button_text = "ตัวเลือกเพิ่มเติม"
 
