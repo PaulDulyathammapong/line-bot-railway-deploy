@@ -1,4 +1,4 @@
-# app.py (Upgraded with Multi-Image Response)
+# app.py (Final Version with All Response Types)
 
 import os
 import json
@@ -63,7 +63,7 @@ def callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     user_message = event.message.text.strip()
-    reply_messages = [] # Use a list to hold multiple message objects
+    reply_messages = []
 
     default_reply = [TextMessage(text="ขออภัยค่ะ ไม่พบข้อมูลที่ท่านสอบถาม")]
 
@@ -81,37 +81,49 @@ def handle_text_message(event):
                     response_type = row.get('ResponseType')
                     
                     if response_type == 'text':
-                        reply_template = row.get('TextReply')
-                        # ... (pattern matching logic remains the same)
-                        reply_messages.append(TextMessage(text=reply_template))
+                        # ... (text logic remains the same)
+                        reply_messages.append(TextMessage(text=row.get('TextReply', '')))
 
                     elif response_type == 'image':
-                        image_url = row.get('ImageURL')
-                        if image_url:
-                            reply_messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
-                    
+                        # ... (image logic remains the same)
+                        if row.get('ImageURL'):
+                            reply_messages.append(ImageMessage(original_content_url=row.get('ImageURL'), preview_image_url=row.get('ImageURL')))
+
                     elif response_type == 'redirect':
                         # ... (redirect logic remains the same)
-                        reply_messages.append(TemplateMessage(...))
-
-                    elif response_type == 'image_text':
-                        # ... (image_text logic remains the same)
-                        pass
+                        if row.get('RedirectURL') and row.get('ButtonLabel'):
+                             reply_messages.append(TemplateMessage(...))
                     
-                    # NEW: Handle sending multiple images
-                    elif response_type == 'multi_image':
-                        text_reply = row.get('TextReply')
-                        if text_reply:
-                            reply_messages.append(TextMessage(text=text_reply))
+                    # NEW: Handles a combination of messages
+                    elif response_type == 'combo':
+                        # 1. Add Text Reply (if it exists)
+                        if row.get('TextReply'):
+                            reply_messages.append(TextMessage(text=row.get('TextReply')))
                         
-                        # Loop through image URL columns (up to 4 for a total of 5 messages)
+                        # 2. Add multiple images (up to 4)
                         for i in range(1, 5):
+                            if len(reply_messages) >= 5: break # LINE's message limit
                             image_url = row.get(f'ImageURL{i}')
                             if image_url:
                                 reply_messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
 
+                        # 3. Add Redirect Button (if it exists and there's space)
+                        if len(reply_messages) < 5 and row.get('RedirectURL') and row.get('ButtonLabel'):
+                            reply_messages.append(TemplateMessage(
+                                alt_text='Information',
+                                template=ButtonsTemplate(
+                                    text=row.get('TextReply', 'กรุณาเลือกเมนูด้านล่าง'), # Use TextReply or a default
+                                    actions=[
+                                        URIAction(
+                                            label=row.get('ButtonLabel'),
+                                            uri=row.get('RedirectURL')
+                                        )
+                                    ]
+                                )
+                            ))
+
                     if reply_messages:
-                        break
+                        break # Stop after finding the first match
         except Exception as e:
             app.logger.error(f"Error processing QnA sheet: {e}")
             reply_messages = [TextMessage(text="Sorry, there was an error processing your request.")]
