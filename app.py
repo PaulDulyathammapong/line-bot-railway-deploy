@@ -1,4 +1,4 @@
-# app.py (Final Stable Version with reliable redirect)
+# app.py (Final Version with Multi-Sheet Knowledge Base - Updated)
 
 import os
 import json
@@ -35,6 +35,10 @@ handler = WebhookHandler(channel_secret)
 
 # --- Google Sheets Setup ---
 gs_client = None
+simple_qna_sheet = None
+digital_sheet = None
+general_sheet = None
+
 if gspread_credentials_b64 and sheet_url:
     try:
         creds_json_str = base64.b64decode(gspread_credentials_b64).decode('utf-8')
@@ -43,11 +47,82 @@ if gspread_credentials_b64 and sheet_url:
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
         gs_client = gspread.authorize(creds)
         spreadsheet = gs_client.open_by_url(sheet_url)
-        qna_sheet = spreadsheet.worksheet('SimpleQnA')
-        app.logger.info("Successfully connected to Google Sheets.")
+        
+        # Connect to each knowledge base sheet by name
+        simple_qna_sheet = spreadsheet.worksheet('SimpleQnA')
+        digital_sheet = spreadsheet.worksheet('DigitalQnA')
+        general_sheet = spreadsheet.worksheet('GeneralQnA')
+        
+        app.logger.info("Successfully connected to all Google Sheets.")
+    except gspread.exceptions.WorksheetNotFound:
+        app.logger.error("A worksheet was not found. Please check your sheet names: SimpleQnA, DigitalQnA, GeneralQnA.")
+        gs_client = None
     except Exception as e:
         app.logger.error(f"Error connecting to Google Sheets: {e}")
         gs_client = None
+
+# --- Helper Function to Search a Sheet ---
+def find_reply_in_sheet(sheet, user_message, event):
+    try:
+        qna_data = sheet.get_all_records()
+        for row in qna_data:
+            keyword_pattern = row.get('Keyword')
+            if not keyword_pattern:
+                continue
+
+            match = re.search(keyword_pattern, user_message, re.IGNORECASE)
+            if match:
+                response_type = row.get('ResponseType')
+                messages_to_reply = []
+
+                if response_type == 'combo':
+                    if row.get('TextReply'):
+                        messages_to_reply.append(TextMessage(text=row.get('TextReply')))
+                    
+                    for i in range(1, 5):
+                        if row.get(f'ImageURL{i}'):
+                            img_url = row.get(f'ImageURL{i}')
+                            messages_to_reply.append(ImageMessage(original_content_url=img_url, preview_image_url=img_url))
+
+                    if row.get('RedirectOA_ID') or row.get('RedirectURL'):
+                         button_label = row.get('ButtonLabel', 'คลิกที่นี่')
+                         text_above_button = row.get('TextReply', 'กรุณากดปุ่มด้านล่าง')
+                         
+                         redirect_uri = ""
+                         if row.get('RedirectOA_ID'):
+                             encoded_message = quote(user_message)
+                             redirect_uri = f"https://line.me/R/oaMessage/{row.get('RedirectOA_ID')}/?{encoded_message}"
+                         elif row.get('RedirectURL'):
+                             redirect_uri = row.get('RedirectURL')
+
+                         messages_to_reply.append(TemplateMessage(
+                            alt_text='Information',
+                            template=ButtonsTemplate(
+                                text=text_above_button,
+                                actions=[URIAction(label=button_label, uri=redirect_uri)]
+                            )
+                         ))
+                    return messages_to_reply
+
+                elif response_type == 'text':
+                    return [TextMessage(text=row.get('TextReply', ''))]
+                elif response_type == 'image':
+                    img_url = row.get('ImageURL1')
+                    return [ImageMessage(original_content_url=img_url, preview_image_url=img_url)]
+                elif response_type == 'redirect':
+                    button_label = row.get('ButtonLabel', 'คลิกที่นี่')
+                    redirect_uri = row.get('RedirectURL') or f"https://line.me/R/ti/p/{row.get('RedirectOA_ID')}"
+                    return [TemplateMessage(
+                        alt_text='Information',
+                        template=ButtonsTemplate(
+                            text=row.get('TextReply', ''),
+                            actions=[URIAction(label=button_label, uri=redirect_uri)]
+                        )
+                    )]
+        return None
+    except Exception as e:
+        app.logger.error(f"Error reading sheet {sheet.title}: {e}")
+        return [TextMessage(text="Sorry, there was an error reading the database.")]
 
 # --- Webhook Route ---
 @app.route("/webhook", methods=['POST'])
@@ -60,97 +135,32 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- Text Message Handler ---
+# --- Text Message Handler (Upgraded with Category Logic) ---
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     user_message = event.message.text.strip()
-    reply_messages = []
-
-    default_reply = [TextMessage(text="ขออภัยค่ะ ไม่พบข้อมูลที่ท่านสอบถาม")]
-
-    if gs_client:
-        try:
-            qna_data = qna_sheet.get_all_records()
-            for row in qna_data:
-                keyword_pattern = row.get('Keyword')
-                if not keyword_pattern:
-                    continue
-
-                match = re.search(keyword_pattern, user_message, re.IGNORECASE)
-
-                if match:
-                    response_type = row.get('ResponseType')
-                    
-                    if response_type == 'text':
-                        reply_template = row.get('TextReply', '')
-                        if '{num}' in reply_template and match.groups():
-                            extracted_num = match.group(1)
-                            reply_text = reply_template.format(num=extracted_num)
-                        else:
-                            reply_text = reply_template
-                        reply_messages.append(TextMessage(text=reply_text))
-
-                    elif response_type == 'image':
-                        if row.get('ImageURL'):
-                            reply_messages.append(ImageMessage(original_content_url=row.get('ImageURL'), preview_image_url=row.get('ImageURL')))
-
-                    elif response_type == 'combo':
-                        # 1. Add Text Reply (if it exists)
-                        if row.get('TextReply'):
-                            reply_messages.append(TextMessage(text=row.get('TextReply')))
-                        
-                        # 2. Add multiple images (up to 4)
-                        for i in range(1, 5):
-                            if len(reply_messages) >= 5: break
-                            image_url = row.get(f'ImageURL{i}')
-                            if image_url:
-                                reply_messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
-
-                        # 3. Add Redirect Button (if it exists and there's space)
-                        if len(reply_messages) < 5:
-                            button_label = row.get('ButtonLabel')
-                            redirect_uri = ""
-                            oa_id = row.get('RedirectOA_ID')
-                            std_url = row.get('RedirectURL')
-
-                            # UPDATED: Use the more stable "add friend" link for LINE OAs
-                            if oa_id:
-                                redirect_uri = f"https://line.me/R/ti/p/{oa_id}"
-                            elif std_url:
-                                redirect_uri = std_url
-
-                            if button_label and redirect_uri:
-                                button_text = row.get('TextReply', 'กรุณาเลือกเมนูด้านล่าง')
-                                if row.get('TextReply') and any(isinstance(msg, TextMessage) for msg in reply_messages):
-                                    button_text = "ตัวเลือกเพิ่มเติม"
-
-                                reply_messages.append(TemplateMessage(
-                                    alt_text='Information',
-                                    template=ButtonsTemplate(
-                                        text=button_text,
-                                        actions=[
-                                            URIAction(
-                                                label=button_label,
-                                                uri=redirect_uri
-                                            )
-                                        ]
-                                    )
-                                ))
-
-                    if reply_messages:
-                        break
-        except Exception as e:
-            app.logger.error(f"Error processing QnA sheet: {e}")
-            reply_messages = [TextMessage(text="Sorry, there was an error processing your request.")]
-
-    final_reply = reply_messages if reply_messages else default_reply
+    reply_messages = None
     
+    # --- Search Logic with Priority ---
+    # Define the order of sheets to search
+    sheets_to_search = [simple_qna_sheet, digital_sheet, general_sheet]
+
+    for sheet in sheets_to_search:
+        if sheet:
+            reply_messages = find_reply_in_sheet(sheet, user_message, event)
+            if reply_messages:
+                break
+
+    if not reply_messages:
+        reply_messages = [TextMessage(text="ขออภัยค่ะ ไม่พบข้อมูลที่ท่านสอบถาม")]
+
+    # Send the final reply
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=final_reply
+                messages=reply_messages
             )
         )
 
