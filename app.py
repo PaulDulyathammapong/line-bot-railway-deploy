@@ -1,4 +1,4 @@
-# app.py (Final Version with Multi-Sheet Knowledge Base - Updated)
+# app.py (Final Version with Stable Redirect Link)
 
 import os
 import json
@@ -17,7 +17,7 @@ from linebot.v3.messaging import (
     TemplateMessage, ButtonsTemplate, URIAction
 )
 from linebot.v3.webhooks import (
-    MessageEvent, TextMessageContent
+    MessageEvent, TextMessageContent, FollowEvent
 )
 
 # --- Configuration ---
@@ -48,21 +48,20 @@ if gspread_credentials_b64 and sheet_url:
         gs_client = gspread.authorize(creds)
         spreadsheet = gs_client.open_by_url(sheet_url)
         
-        # Connect to each knowledge base sheet by name
         simple_qna_sheet = spreadsheet.worksheet('SimpleQnA')
         digital_sheet = spreadsheet.worksheet('DigitalQnA')
         general_sheet = spreadsheet.worksheet('GeneralQnA')
         
         app.logger.info("Successfully connected to all Google Sheets.")
-    except gspread.exceptions.WorksheetNotFound:
-        app.logger.error("A worksheet was not found. Please check your sheet names: SimpleQnA, DigitalQnA, GeneralQnA.")
+    except gspread.exceptions.WorksheetNotFound as e:
+        app.logger.error(f"A worksheet was not found. Please check your sheet names. Error: {e}")
         gs_client = None
     except Exception as e:
         app.logger.error(f"Error connecting to Google Sheets: {e}")
         gs_client = None
 
 # --- Helper Function to Search a Sheet ---
-def find_reply_in_sheet(sheet, user_message, event):
+def find_reply_in_sheet(sheet, user_message):
     try:
         qna_data = sheet.get_all_records()
         for row in qna_data:
@@ -79,7 +78,7 @@ def find_reply_in_sheet(sheet, user_message, event):
                     if row.get('TextReply'):
                         messages_to_reply.append(TextMessage(text=row.get('TextReply')))
                     
-                    for i in range(1, 5):
+                    for i in range(1, 5): # Supports up to 4 images
                         if row.get(f'ImageURL{i}'):
                             img_url = row.get(f'ImageURL{i}')
                             messages_to_reply.append(ImageMessage(original_content_url=img_url, preview_image_url=img_url))
@@ -90,35 +89,46 @@ def find_reply_in_sheet(sheet, user_message, event):
                          
                          redirect_uri = ""
                          if row.get('RedirectOA_ID'):
-                             encoded_message = quote(user_message)
-                             redirect_uri = f"https://line.me/R/oaMessage/{row.get('RedirectOA_ID')}/?{encoded_message}"
+                             # STABLE LINK
+                             redirect_uri = f"https://line.me/R/ti/p/{row.get('RedirectOA_ID')}"
                          elif row.get('RedirectURL'):
                              redirect_uri = row.get('RedirectURL')
 
-                         messages_to_reply.append(TemplateMessage(
-                            alt_text='Information',
-                            template=ButtonsTemplate(
-                                text=text_above_button,
-                                actions=[URIAction(label=button_label, uri=redirect_uri)]
-                            )
-                         ))
+                         if redirect_uri:
+                             messages_to_reply.append(TemplateMessage(
+                                alt_text='Information',
+                                template=ButtonsTemplate(
+                                    text=text_above_button,
+                                    actions=[URIAction(label=button_label, uri=redirect_uri)]
+                                )
+                             ))
                     return messages_to_reply
 
                 elif response_type == 'text':
-                    return [TextMessage(text=row.get('TextReply', ''))]
-                elif response_type == 'image':
-                    img_url = row.get('ImageURL1')
-                    return [ImageMessage(original_content_url=img_url, preview_image_url=img_url)]
+                    reply_template = row.get('TextReply', '')
+                    if '{num}' in reply_template and match.groups():
+                        reply_text = reply_template.format(num=match.group(1))
+                    else:
+                        reply_text = reply_template
+                    return [TextMessage(text=reply_text)]
+
                 elif response_type == 'redirect':
                     button_label = row.get('ButtonLabel', 'คลิกที่นี่')
-                    redirect_uri = row.get('RedirectURL') or f"https://line.me/R/ti/p/{row.get('RedirectOA_ID')}"
-                    return [TemplateMessage(
-                        alt_text='Information',
-                        template=ButtonsTemplate(
-                            text=row.get('TextReply', ''),
-                            actions=[URIAction(label=button_label, uri=redirect_uri)]
-                        )
-                    )]
+                    redirect_uri = ""
+                    if row.get('RedirectOA_ID'):
+                        # STABLE LINK
+                        redirect_uri = f"https://line.me/R/ti/p/{row.get('RedirectOA_ID')}"
+                    elif row.get('RedirectURL'):
+                        redirect_uri = row.get('RedirectURL')
+                    
+                    if redirect_uri:
+                        return [TemplateMessage(
+                            alt_text='Information',
+                            template=ButtonsTemplate(
+                                text=row.get('TextReply', ''),
+                                actions=[URIAction(label=button_label, uri=redirect_uri)]
+                            )
+                        )]
         return None
     except Exception as e:
         app.logger.error(f"Error reading sheet {sheet.title}: {e}")
@@ -135,26 +145,42 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- Text Message Handler (Upgraded with Category Logic) ---
+# --- Greeting Message Handler ---
+@handler.add(FollowEvent)
+def handle_follow(event):
+    reply_messages = None
+    if general_sheet:
+        reply_messages = find_reply_in_sheet(general_sheet, "@follow")
+    
+    if not reply_messages:
+        reply_messages = [TextMessage(text="สวัสดีค่ะ! ยินดีต้อนรับสู่ Work Inn AI ค่ะ")]
+        
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=reply_messages
+            )
+        )
+
+# --- Text Message Handler ---
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     user_message = event.message.text.strip()
     reply_messages = None
     
-    # --- Search Logic with Priority ---
-    # Define the order of sheets to search
     sheets_to_search = [simple_qna_sheet, digital_sheet, general_sheet]
 
     for sheet in sheets_to_search:
         if sheet:
-            reply_messages = find_reply_in_sheet(sheet, user_message, event)
+            reply_messages = find_reply_in_sheet(sheet, user_message)
             if reply_messages:
                 break
 
     if not reply_messages:
         reply_messages = [TextMessage(text="ขออภัยค่ะ ไม่พบข้อมูลที่ท่านสอบถาม")]
 
-    # Send the final reply
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message(
