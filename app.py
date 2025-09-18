@@ -1,4 +1,4 @@
-# app.py (Final Version with Stable Redirect Link)
+# app.py (Final Version with Video Support)
 
 import os
 import json
@@ -14,7 +14,8 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
     Configuration, ApiClient, MessagingApi,
     ReplyMessageRequest, TextMessage, ImageMessage,
-    TemplateMessage, ButtonsTemplate, URIAction
+    TemplateMessage, ButtonsTemplate, URIAction,
+    VideoMessage, AudioMessage
 )
 from linebot.v3.webhooks import (
     MessageEvent, TextMessageContent, FollowEvent
@@ -74,27 +75,78 @@ def find_reply_in_sheet(sheet, user_message):
                 response_type = row.get('ResponseType')
                 messages_to_reply = []
 
-                if response_type == 'combo':
+                if response_type == 'text':
+                    reply_template = row.get('TextReply', '')
+                    if '{num}' in reply_template and match.groups():
+                        reply_text = reply_template.format(num=match.group(1))
+                    else:
+                        reply_text = reply_template
+                    return [TextMessage(text=reply_text)]
+
+                elif response_type == 'image':
+                    img_url = row.get('ImageURL1')
+                    return [ImageMessage(original_content_url=img_url, preview_image_url=img_url)]
+
+                elif response_type == 'audio':
+                    audio_url = row.get('AudioURL')
+                    duration = int(row.get('DurationMillis', 60000))
+                    return [AudioMessage(original_content_url=audio_url, duration=duration)]
+
+                elif response_type == 'video':
+                    video_url = row.get('VideoURL')
+                    preview_url = row.get('PreviewImageURL')
+                    return [VideoMessage(original_content_url=video_url, preview_image_url=preview_url)]
+
+                elif response_type == 'redirect':
+                    button_label = row.get('ButtonLabel', 'คลิกที่นี่')
+                    redirect_uri = row.get('RedirectURL') or f"https://line.me/R/ti/p/{row.get('RedirectOA_ID')}"
+                    return [TemplateMessage(
+                        alt_text='Information',
+                        template=ButtonsTemplate(
+                            text=row.get('TextReply', ''),
+                            actions=[URIAction(label=button_label, uri=redirect_uri)]
+                        )
+                    )]
+                
+                elif response_type == 'image_text':
+                    if row.get('ImageURL1'):
+                        messages_to_reply.append(ImageMessage(original_content_url=row.get('ImageURL1'), preview_image_url=row.get('ImageURL1')))
+                    if row.get('TextReply'):
+                        messages_to_reply.append(TextMessage(text=row.get('TextReply')))
+                    return messages_to_reply
+
+                elif response_type == 'multi_image':
+                    if row.get('TextReply'):
+                        messages_to_reply.append(TextMessage(text=row.get('TextReply')))
+                    for i in range(1, 5): 
+                        if row.get(f'ImageURL{i}'):
+                            img_url = row.get(f'ImageURL{i}')
+                            messages_to_reply.append(ImageMessage(original_content_url=img_url, preview_image_url=img_url))
+                    return messages_to_reply
+                
+                elif response_type == 'combo':
                     if row.get('TextReply'):
                         messages_to_reply.append(TextMessage(text=row.get('TextReply')))
                     
-                    for i in range(1, 5): # Supports up to 4 images
+                    for i in range(1, 5):
                         if row.get(f'ImageURL{i}'):
                             img_url = row.get(f'ImageURL{i}')
                             messages_to_reply.append(ImageMessage(original_content_url=img_url, preview_image_url=img_url))
 
                     if row.get('RedirectOA_ID') or row.get('RedirectURL'):
                          button_label = row.get('ButtonLabel', 'คลิกที่นี่')
-                         text_above_button = row.get('TextReply', 'กรุณากดปุ่มด้านล่าง')
+                         text_above_button = "กรุณากดปุ่มด้านล่างเพื่อดำเนินการต่อ"
                          
                          redirect_uri = ""
                          if row.get('RedirectOA_ID'):
-                             # STABLE LINK
                              redirect_uri = f"https://line.me/R/ti/p/{row.get('RedirectOA_ID')}"
                          elif row.get('RedirectURL'):
                              redirect_uri = row.get('RedirectURL')
 
                          if redirect_uri:
+                             if row.get('TextReply'):
+                                 text_above_button = row.get('TextReply')
+
                              messages_to_reply.append(TemplateMessage(
                                 alt_text='Information',
                                 template=ButtonsTemplate(
@@ -103,32 +155,6 @@ def find_reply_in_sheet(sheet, user_message):
                                 )
                              ))
                     return messages_to_reply
-
-                elif response_type == 'text':
-                    reply_template = row.get('TextReply', '')
-                    if '{num}' in reply_template and match.groups():
-                        reply_text = reply_template.format(num=match.group(1))
-                    else:
-                        reply_text = reply_template
-                    return [TextMessage(text=reply_text)]
-
-                elif response_type == 'redirect':
-                    button_label = row.get('ButtonLabel', 'คลิกที่นี่')
-                    redirect_uri = ""
-                    if row.get('RedirectOA_ID'):
-                        # STABLE LINK
-                        redirect_uri = f"https://line.me/R/ti/p/{row.get('RedirectOA_ID')}"
-                    elif row.get('RedirectURL'):
-                        redirect_uri = row.get('RedirectURL')
-                    
-                    if redirect_uri:
-                        return [TemplateMessage(
-                            alt_text='Information',
-                            template=ButtonsTemplate(
-                                text=row.get('TextReply', ''),
-                                actions=[URIAction(label=button_label, uri=redirect_uri)]
-                            )
-                        )]
         return None
     except Exception as e:
         app.logger.error(f"Error reading sheet {sheet.title}: {e}")
